@@ -38,9 +38,19 @@ def create_app(config_name=None):
     jwt.init_app(app)
     ma.init_app(app)
     mail.init_app(app)
+    allowed_origins = [
+        "https://click-book.netlify.app",
+        "http://localhost:8080",
+        "http://localhost:5173",
+        "http://localhost:3000",
+    ]
     cors.init_app(
         app,
-        resources={r"/api/*": {"origins": "*"}, r"/static/*": {"origins": "*"}},
+        resources={
+            r"/api/*": {"origins": allowed_origins},
+            r"/static/*": {"origins": allowed_origins},
+        },
+        supports_credentials=True,
     )
 
     # Ensure the uploads folder exists at startup so url_for works on first hit.
