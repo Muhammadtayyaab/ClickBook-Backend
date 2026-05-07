@@ -27,8 +27,8 @@ def create_checkout_session(user_id, site_id, plan, billing_period, *, template_
     }
     session = stripe.checkout.Session.create(
         mode="payment",
-        success_url=f"{current_app.config['CLIENT_URL']}/billing/success?session_id={{CHECKOUT_SESSION_ID}}",
-        cancel_url=f"{current_app.config['CLIENT_URL']}/billing/cancel",
+        success_url="https://click-book-frontend.vercel.app/billing/success?session_id={CHECKOUT_SESSION_ID}",
+        cancel_url="https://click-book-frontend.vercel.app/billing/cancel",
         line_items=[{
             "price_data": {
                 "currency": "usd",
