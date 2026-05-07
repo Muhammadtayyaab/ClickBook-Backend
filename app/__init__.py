@@ -43,6 +43,7 @@ def create_app(config_name=None):
         "http://localhost:8080",
         "http://localhost:5173",
         "http://localhost:3000",
+        "https://click-book-frontend.vercel.app"
     ]
     cors.init_app(
         app,
