@@ -1,0 +1,8 @@
+{
+  "permissions": {
+    "allow": [
+      "Read(//d/FYP/design-domain-quest/frontend/**)",
+      "Bash(npx tsc *)"
+    ]
+  }
+}
