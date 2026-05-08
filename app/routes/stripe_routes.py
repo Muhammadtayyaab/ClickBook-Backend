@@ -194,17 +194,38 @@ def verify_session():
     if not payment:
         return error_response("Payment not found", 404)
 
-    try:
-        session = retrieve_session(session_id)
-    except RuntimeError as exc:
-        return error_response(str(exc), 500)
-    except stripe.error.StripeError as exc:
-        message = getattr(exc, "user_message", None) or str(exc)
-        return error_response(f"Stripe verification failed: {message}", 502)
+    # Stripe finalizes the payment asynchronously after the user is
+    # redirected back, so the first verify-session call can land while
+    # Stripe still reports payment_status="unpaid". Poll briefly so the
+    # frontend almost always observes "paid" on the first request and
+    # we don't flash a misleading "not confirmed" warning.
+    import time
 
-    payment_status = getattr(session, "payment_status", None)
-    session_status = getattr(session, "status", None)
-    paid = payment_status == "paid" or session_status == "complete"
+    session = None
+    payment_status = None
+    session_status = None
+    paid = False
+    last_error: Exception | None = None
+    for attempt in range(6):  # ~6 attempts over ~6s
+        try:
+            session = retrieve_session(session_id)
+        except RuntimeError as exc:
+            return error_response(str(exc), 500)
+        except stripe.error.StripeError as exc:
+            last_error = exc
+            session = None
+            break
+
+        payment_status = getattr(session, "payment_status", None)
+        session_status = getattr(session, "status", None)
+        paid = payment_status == "paid" or session_status == "complete"
+        if paid:
+            break
+        time.sleep(1.0)
+
+    if session is None and last_error is not None:
+        message = getattr(last_error, "user_message", None) or str(last_error)
+        return error_response(f"Stripe verification failed: {message}", 502)
 
     if paid and payment.status != PaymentStatus.completed:
         _finalize_payment(payment, getattr(session, "payment_intent", None))
