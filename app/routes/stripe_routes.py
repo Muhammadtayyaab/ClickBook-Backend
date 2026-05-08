@@ -194,11 +194,12 @@ def verify_session():
     if not payment:
         return error_response("Payment not found", 404)
 
-    # Stripe finalizes the payment asynchronously after the user is
-    # redirected back, so the first verify-session call can land while
-    # Stripe still reports payment_status="unpaid". Poll briefly so the
-    # frontend almost always observes "paid" on the first request and
-    # we don't flash a misleading "not confirmed" warning.
+    # Stripe finalizes asynchronously after the redirect — the first call
+    # can land while payment_status is still "unpaid". Poll briefly (max
+    # ~2.5s total) so the frontend usually sees "paid" on the first
+    # request without us approaching gunicorn's worker timeout. The
+    # webhook is the authoritative finalizer; if we still see "unpaid"
+    # after this window, the frontend retries.
     import time
 
     session = None
@@ -206,7 +207,10 @@ def verify_session():
     session_status = None
     paid = False
     last_error: Exception | None = None
-    for attempt in range(6):  # ~6 attempts over ~6s
+    delays = [0.0, 0.6, 0.8, 1.0]  # 4 attempts within ~2.4s
+    for delay in delays:
+        if delay:
+            time.sleep(delay)
         try:
             session = retrieve_session(session_id)
         except RuntimeError as exc:
@@ -219,9 +223,8 @@ def verify_session():
         payment_status = getattr(session, "payment_status", None)
         session_status = getattr(session, "status", None)
         paid = payment_status == "paid" or session_status == "complete"
-        if paid:
+        if paid or payment.status == PaymentStatus.completed:
             break
-        time.sleep(1.0)
 
     if session is None and last_error is not None:
         message = getattr(last_error, "user_message", None) or str(last_error)
