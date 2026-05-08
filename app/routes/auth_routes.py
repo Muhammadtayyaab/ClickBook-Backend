@@ -46,31 +46,28 @@ def register():
         current_app.logger.exception("Token creation failed for user %s: %s", user.id, exc)
         return error_response("Could not create session token", 500)
 
-    # Welcome email is best-effort and must NEVER block signup. SMTP from
-    # the request thread can hang past gunicorn's worker timeout (-> 500),
-    # so we run it in a background thread with a short socket timeout.
-    import socket
+    # Welcome email is best-effort and must NEVER block or affect signup.
+    # Dispatched in a daemon thread so SMTP latency / failures cannot reach
+    # the response path. We deliberately do NOT use socket.setdefaulttimeout
+    # here — that flag is process-global and would affect the response
+    # socket and the Postgres connection pool too.
     import threading
 
-    def _send_welcome_async(app, target_user_id, target_email, target_name):
+    def _send_welcome_async(app, target_email, target_name):
         try:
             with app.app_context():
-                socket.setdefaulttimeout(5)
-                try:
-                    email_service._send(
-                        target_email,
-                        "Welcome to ClickBook",
-                        f"<h2>Welcome to ClickBook, {target_name}!</h2>",
-                    )
-                finally:
-                    socket.setdefaulttimeout(None)
+                email_service._send(
+                    target_email,
+                    "Welcome to ClickBook",
+                    f"<h2>Welcome to ClickBook, {target_name}!</h2>",
+                )
         except Exception as exc:
             app.logger.warning("Welcome email failed for %s: %s", target_email, exc)
 
     try:
         threading.Thread(
             target=_send_welcome_async,
-            args=(current_app._get_current_object(), str(user.id), user.email, user.name),
+            args=(current_app._get_current_object(), user.email, user.name),
             daemon=True,
         ).start()
     except Exception as exc:
