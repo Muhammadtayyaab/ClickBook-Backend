@@ -33,13 +33,31 @@ def register():
         return error_response("Email is already in use", 409)
     user = User(name=payload["name"], email=payload["email"].lower(), password_hash=generate_password_hash(payload["password"]))
     db.session.add(user)
-    db.session.commit()
-    token = create_access_token(identity=str(user.id))
+    try:
+        db.session.commit()
+    except Exception as exc:
+        db.session.rollback()
+        current_app.logger.exception("Registration commit failed: %s", exc)
+        return error_response("Could not create account", 500)
+
+    try:
+        token = create_access_token(identity=str(user.id))
+    except Exception as exc:
+        current_app.logger.exception("Token creation failed for user %s: %s", user.id, exc)
+        return error_response("Could not create session token", 500)
+
     try:
         email_service.send_welcome_email(user)
-    except Exception:
-        pass  # MVP: don't block registration if email fails
-    return success_response({"token": token, "user": UserOutputSchema().dump(user)})
+    except Exception as exc:
+        current_app.logger.warning("Welcome email failed for %s: %s", user.email, exc)
+
+    try:
+        user_data = UserOutputSchema().dump(user)
+    except Exception as exc:
+        current_app.logger.exception("User serialization failed for %s: %s", user.id, exc)
+        user_data = {"id": str(user.id), "email": user.email, "name": user.name}
+
+    return success_response({"token": token, "user": user_data})
 
 
 @auth_bp.post("/login")
