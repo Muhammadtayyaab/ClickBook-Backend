@@ -46,10 +46,35 @@ def register():
         current_app.logger.exception("Token creation failed for user %s: %s", user.id, exc)
         return error_response("Could not create session token", 500)
 
+    # Welcome email is best-effort and must NEVER block signup. SMTP from
+    # the request thread can hang past gunicorn's worker timeout (-> 500),
+    # so we run it in a background thread with a short socket timeout.
+    import socket
+    import threading
+
+    def _send_welcome_async(app, target_user_id, target_email, target_name):
+        try:
+            with app.app_context():
+                socket.setdefaulttimeout(5)
+                try:
+                    email_service._send(
+                        target_email,
+                        "Welcome to ClickBook",
+                        f"<h2>Welcome to ClickBook, {target_name}!</h2>",
+                    )
+                finally:
+                    socket.setdefaulttimeout(None)
+        except Exception as exc:
+            app.logger.warning("Welcome email failed for %s: %s", target_email, exc)
+
     try:
-        email_service.send_welcome_email(user)
+        threading.Thread(
+            target=_send_welcome_async,
+            args=(current_app._get_current_object(), str(user.id), user.email, user.name),
+            daemon=True,
+        ).start()
     except Exception as exc:
-        current_app.logger.warning("Welcome email failed for %s: %s", user.email, exc)
+        current_app.logger.warning("Could not dispatch welcome email thread: %s", exc)
 
     try:
         user_data = UserOutputSchema().dump(user)
