@@ -212,27 +212,41 @@ def change_password():
 
 @auth_bp.post("/forgot-password")
 def forgot_password():
-    payload = ForgotPasswordSchema().load(request.get_json() or {})
-    user = User.query.filter_by(email=payload["email"].lower()).first()
-    if user:
-        s = URLSafeTimedSerializer(current_app.config["SECRET_KEY"])
-        token = s.dumps(user.email, salt="password-reset")
-        # Prefer the calling frontend's origin so dev ports (8081, etc.) work.
-        base_url = request.headers.get("Origin") or current_app.config["CLIENT_URL"]
-        link = f"{base_url}/reset-password?token={token}"
+    try:
+        payload = ForgotPasswordSchema().load(request.get_json() or {})
+    except Exception as exc:
+        current_app.logger.warning("Forgot-password validation failed: %s", exc)
+        return success_response({"message": "If the email exists, a reset link has been sent"})
+
+    # Send the email asynchronously so SMTP latency / failures never bubble up
+    # to the response. Always return the same generic success message so the
+    # endpoint can't be used to enumerate accounts.
+    base_url = request.headers.get("Origin") or current_app.config["CLIENT_URL"]
+    email_lower = payload["email"].lower()
+
+    def _dispatch_reset(app, target_email, base):
         try:
-            email_service.send_password_reset_email(user.email, link)
+            with app.app_context():
+                user = User.query.filter_by(email=target_email).first()
+                if not user:
+                    return
+                s = URLSafeTimedSerializer(app.config["SECRET_KEY"])
+                token = s.dumps(user.email, salt="password-reset")
+                link = f"{base}/reset-password?token={token}"
+                email_service.send_password_reset_email(user.email, link)
         except Exception as exc:
-            current_app.logger.exception("Failed to send password reset email to %s: %s", user.email, exc)
-            # Dev-only fallback: return the link so the user can continue testing
-            # even if SMTP isn't configured.
-            if current_app.debug:
-                return success_response(
-                    {
-                        "message": "Email not configured; use the reset link below.",
-                        "reset_link": link,
-                    }
-                )
+            app.logger.exception("Failed to send password reset email to %s: %s", target_email, exc)
+
+    try:
+        import threading
+        threading.Thread(
+            target=_dispatch_reset,
+            args=(current_app._get_current_object(), email_lower, base_url),
+            daemon=True,
+        ).start()
+    except Exception as exc:
+        current_app.logger.warning("Could not dispatch password reset thread: %s", exc)
+
     return success_response({"message": "If the email exists, a reset link has been sent"})
 
 
