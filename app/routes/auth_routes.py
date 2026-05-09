@@ -6,7 +6,7 @@ from flask_jwt_extended import create_access_token, get_jwt, jwt_required
 from werkzeug.security import check_password_hash, generate_password_hash
 
 from app.extensions import db
-from app.middleware.auth import active_required, get_current_user
+from app.middleware.auth import get_current_user
 from app.models import Site, TokenBlocklist, User
 from app.models.site import SiteStatus
 from app.models.user import UserPlan
@@ -33,53 +33,13 @@ def register():
         return error_response("Email is already in use", 409)
     user = User(name=payload["name"], email=payload["email"].lower(), password_hash=generate_password_hash(payload["password"]))
     db.session.add(user)
+    db.session.commit()
+    token = create_access_token(identity=str(user.id))
     try:
-        db.session.commit()
-    except Exception as exc:
-        db.session.rollback()
-        current_app.logger.exception("Registration commit failed: %s", exc)
-        return error_response("Could not create account", 500)
-
-    try:
-        token = create_access_token(identity=str(user.id))
-    except Exception as exc:
-        current_app.logger.exception("Token creation failed for user %s: %s", user.id, exc)
-        return error_response("Could not create session token", 500)
-
-    # Welcome email is best-effort and must NEVER block or affect signup.
-    # Dispatched in a daemon thread so SMTP latency / failures cannot reach
-    # the response path. We deliberately do NOT use socket.setdefaulttimeout
-    # here — that flag is process-global and would affect the response
-    # socket and the Postgres connection pool too.
-    import threading
-
-    def _send_welcome_async(app, target_email, target_name):
-        try:
-            with app.app_context():
-                email_service._send(
-                    target_email,
-                    "Welcome to ClickBook",
-                    f"<h2>Welcome to ClickBook, {target_name}!</h2>",
-                )
-        except Exception as exc:
-            app.logger.warning("Welcome email failed for %s: %s", target_email, exc)
-
-    try:
-        threading.Thread(
-            target=_send_welcome_async,
-            args=(current_app._get_current_object(), user.email, user.name),
-            daemon=True,
-        ).start()
-    except Exception as exc:
-        current_app.logger.warning("Could not dispatch welcome email thread: %s", exc)
-
-    try:
-        user_data = UserOutputSchema().dump(user)
-    except Exception as exc:
-        current_app.logger.exception("User serialization failed for %s: %s", user.id, exc)
-        user_data = {"id": str(user.id), "email": user.email, "name": user.name}
-
-    return success_response({"token": token, "user": user_data})
+        email_service.send_welcome_email(user)
+    except Exception:
+        pass  # MVP: don't block registration if email fails
+    return success_response({"token": token, "user": UserOutputSchema().dump(user)})
 
 
 @auth_bp.post("/login")
@@ -88,8 +48,6 @@ def login():
     user = User.query.filter_by(email=payload["email"].lower()).first()
     if not user or not check_password_hash(user.password_hash, payload["password"]):
         return error_response("Invalid email or password", 401)
-    if not user.is_active:
-        return error_response("Account suspended. Contact support.", 403)
     from datetime import datetime, timezone
     user.last_login_at = datetime.now(timezone.utc)
     db.session.commit()
@@ -148,7 +106,6 @@ def my_subscription():
 
 @auth_bp.patch("/me")
 @jwt_required()
-@active_required
 def update_me():
     payload = UpdateProfileSchema().load(request.get_json() or {})
     user = get_current_user()
@@ -172,7 +129,6 @@ def update_me():
 
 @auth_bp.post("/me/unsubscribe")
 @jwt_required()
-@active_required
 def unsubscribe():
     """Cancel the active subscription. The user reverts to the free plan
     immediately and forfeits any remaining paid time — no refund. Sites
@@ -199,7 +155,6 @@ def logout():
 
 @auth_bp.post("/change-password")
 @jwt_required()
-@active_required
 def change_password():
     payload = ChangePasswordSchema().load(request.get_json() or {})
     user = get_current_user()
@@ -212,109 +167,28 @@ def change_password():
 
 @auth_bp.post("/forgot-password")
 def forgot_password():
-    import sys
-    import socket
-    import traceback as _tb
-
-    def _log(msg):
-        print(f"[forgot-password] {msg}", file=sys.stdout, flush=True)
+    payload = ForgotPasswordSchema().load(request.get_json() or {})
+    user = User.query.filter_by(email=payload["email"].lower()).first()
+    if user:
+        s = URLSafeTimedSerializer(current_app.config["SECRET_KEY"])
+        token = s.dumps(user.email, salt="password-reset")
+        # Prefer the calling frontend's origin so dev ports (8081, etc.) work.
+        base_url = request.headers.get("Origin") or current_app.config["CLIENT_URL"]
+        link = f"{base_url}/reset-password?token={token}"
         try:
-            current_app.logger.info("[forgot-password] %s", msg)
-        except Exception:
-            pass
-
-    body = request.get_json(silent=True) or {}
-    debug_diag = request.args.get("debug") == "1" or body.get("debug") is True
-    diagnostics = {"steps": []}
-
-    def _step(name, ok=True, **info):
-        diagnostics["steps"].append({"step": name, "ok": ok, **info})
-        _log(f"{name} ok={ok} {info}")
-
-    try:
-        _log("request received")
-        _step("received", body_keys=list(body.keys()))
-
-        try:
-            payload = ForgotPasswordSchema().load(body)
-        except Exception as exc:
-            _step("validate", ok=False, error=repr(exc))
-            return success_response({"message": "If the email exists, a reset link has been sent"})
-        _step("validate")
-
-        base_url = request.headers.get("Origin") or current_app.config.get("CLIENT_URL")
-        email_lower = payload["email"].lower()
-        _step("lookup_start", email=email_lower)
-
-        try:
-            user = User.query.filter_by(email=email_lower).first()
-        except Exception as exc:
-            _step("db_lookup", ok=False, error=repr(exc))
-            if debug_diag:
-                return success_response({"message": "DB lookup failed", "error": repr(exc), "diagnostics": diagnostics})
-            return success_response({"message": "If the email exists, a reset link has been sent"})
-        _step("db_lookup", found=bool(user))
-
-        if not user:
-            return success_response({"message": "If the email exists, a reset link has been sent", **({"diagnostics": diagnostics} if debug_diag else {})})
-
-        try:
-            s = URLSafeTimedSerializer(current_app.config["SECRET_KEY"])
-            token = s.dumps(user.email, salt="password-reset")
-            link = f"{base_url}/reset-password?token={token}"
-        except Exception as exc:
-            _step("token", ok=False, error=repr(exc))
-            if debug_diag:
-                return success_response({"message": "Token generation failed", "error": repr(exc), "diagnostics": diagnostics})
-            return success_response({"message": "If the email exists, a reset link has been sent"})
-        _step("token")
-
-        smtp_error = None
-        old_timeout = socket.getdefaulttimeout()
-        try:
-            socket.setdefaulttimeout(10)
             email_service.send_password_reset_email(user.email, link)
-            _step("smtp_send")
         except Exception as exc:
-            smtp_error = exc
-            _step("smtp_send", ok=False, error=repr(exc))
-            _log(_tb.format_exc())
-        finally:
-            socket.setdefaulttimeout(old_timeout)
-
-        if debug_diag:
-            return success_response({
-                "message": "diagnostic",
-                "smtp_error": repr(smtp_error) if smtp_error else None,
-                "mail_server": current_app.config.get("MAIL_SERVER"),
-                "mail_port": current_app.config.get("MAIL_PORT"),
-                "mail_use_tls": current_app.config.get("MAIL_USE_TLS"),
-                "mail_username_set": bool(current_app.config.get("MAIL_USERNAME")),
-                "mail_password_set": bool(current_app.config.get("MAIL_PASSWORD")),
-                "diagnostics": diagnostics,
-                "reset_link": link,
-            })
-
-        return success_response({"message": "If the email exists, a reset link has been sent"})
-
-    except Exception as exc:
-        # Top-level guard: never let this endpoint return 500. Without this,
-        # any unexpected error (DB connection, config missing, etc.) becomes
-        # an opaque 500 with no body — which is what we hit before.
-        _log(f"unhandled exception: {exc!r}")
-        _log(_tb.format_exc())
-        try:
-            current_app.logger.exception("forgot-password unhandled")
-        except Exception:
-            pass
-        if debug_diag:
-            return success_response({
-                "message": "unhandled",
-                "error": repr(exc),
-                "trace": _tb.format_exc(),
-                "diagnostics": diagnostics,
-            })
-        return success_response({"message": "If the email exists, a reset link has been sent"})
+            current_app.logger.exception("Failed to send password reset email to %s: %s", user.email, exc)
+            # Dev-only fallback: return the link so the user can continue testing
+            # even if SMTP isn't configured.
+            if current_app.debug:
+                return success_response(
+                    {
+                        "message": "Email not configured; use the reset link below.",
+                        "reset_link": link,
+                    }
+                )
+    return success_response({"message": "If the email exists, a reset link has been sent"})
 
 
 @auth_bp.post("/reset-password")
