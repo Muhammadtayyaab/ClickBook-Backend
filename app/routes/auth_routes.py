@@ -250,38 +250,39 @@ def forgot_password():
         current_app.logger.exception("Token generation failed for %s", user.email)
         return success_response({"message": "If the email exists, a reset link has been sent"})
 
-    # SMTP can hang on connect (Railway blocks outbound port 25; misconfigured
-    # hosts time out). Run the send in a daemon thread with a hard socket
-    # timeout so the request thread always returns quickly and gunicorn never
-    # kills the worker on this endpoint.
+    # Send synchronously with a tight socket timeout so SMTP errors surface in
+    # the HTTP response — Railway log visibility has been unreliable for this
+    # service. Pass `?debug=1` to receive the actual error in the response body
+    # to aid diagnosis. The 15s timeout keeps us well inside gunicorn's
+    # default 30s worker timeout.
     import socket
-    import threading
+    import traceback as _tb
 
-    def _do_send(app, target_email, target_link):
-        old_timeout = socket.getdefaulttimeout()
-        try:
-            socket.setdefaulttimeout(15)
-            with app.app_context():
-                email_service.send_password_reset_email(target_email, target_link)
-            print(f"[forgot-password] reset email dispatched to {target_email}", flush=True)
-        except Exception as exc:
-            print(f"[forgot-password] SMTP send failed for {target_email}: {exc!r}", flush=True)
-            try:
-                app.logger.exception("Failed to send password reset email to %s", target_email)
-            except Exception:
-                pass
-        finally:
-            socket.setdefaulttimeout(old_timeout)
+    debug_diag = request.args.get("debug") == "1" or (request.get_json(silent=True) or {}).get("debug") is True
 
+    smtp_error = None
+    old_timeout = socket.getdefaulttimeout()
     try:
-        threading.Thread(
-            target=_do_send,
-            args=(current_app._get_current_object(), user.email, link),
-            daemon=True,
-        ).start()
-        _log(f"reset email dispatch thread started for {user.email}")
+        socket.setdefaulttimeout(15)
+        email_service.send_password_reset_email(user.email, link)
+        _log(f"reset email dispatched to {user.email}")
     except Exception as exc:
-        _log(f"could not start dispatch thread: {exc}")
+        smtp_error = exc
+        _log(f"SMTP send failed for {user.email}: {exc!r}")
+        _log(_tb.format_exc())
+    finally:
+        socket.setdefaulttimeout(old_timeout)
+
+    if smtp_error is not None and debug_diag:
+        # Diagnostic mode only — never enabled by the normal frontend path.
+        return success_response({
+            "message": "SMTP send failed",
+            "error": f"{type(smtp_error).__name__}: {smtp_error}",
+            "mail_server": current_app.config.get("MAIL_SERVER"),
+            "mail_port": current_app.config.get("MAIL_PORT"),
+            "mail_username_set": bool(current_app.config.get("MAIL_USERNAME")),
+            "mail_password_set": bool(current_app.config.get("MAIL_PASSWORD")),
+        })
 
     return success_response({"message": "If the email exists, a reset link has been sent"})
 
