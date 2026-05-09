@@ -250,20 +250,38 @@ def forgot_password():
         current_app.logger.exception("Token generation failed for %s", user.email)
         return success_response({"message": "If the email exists, a reset link has been sent"})
 
-    # Send synchronously so SMTP errors surface in the logs — this is a low
-    # frequency endpoint, so a small wait is acceptable.
+    # SMTP can hang on connect (Railway blocks outbound port 25; misconfigured
+    # hosts time out). Run the send in a daemon thread with a hard socket
+    # timeout so the request thread always returns quickly and gunicorn never
+    # kills the worker on this endpoint.
+    import socket
+    import threading
+
+    def _do_send(app, target_email, target_link):
+        old_timeout = socket.getdefaulttimeout()
+        try:
+            socket.setdefaulttimeout(15)
+            with app.app_context():
+                email_service.send_password_reset_email(target_email, target_link)
+            print(f"[forgot-password] reset email dispatched to {target_email}", flush=True)
+        except Exception as exc:
+            print(f"[forgot-password] SMTP send failed for {target_email}: {exc!r}", flush=True)
+            try:
+                app.logger.exception("Failed to send password reset email to %s", target_email)
+            except Exception:
+                pass
+        finally:
+            socket.setdefaulttimeout(old_timeout)
+
     try:
-        email_service.send_password_reset_email(user.email, link)
-        _log(f"reset email dispatched to {user.email}")
+        threading.Thread(
+            target=_do_send,
+            args=(current_app._get_current_object(), user.email, link),
+            daemon=True,
+        ).start()
+        _log(f"reset email dispatch thread started for {user.email}")
     except Exception as exc:
-        _log(f"SMTP send failed: {exc}")
-        current_app.logger.exception("Failed to send password reset email to %s", user.email)
-        # Dev fallback: return the link so testing isn't blocked by SMTP issues.
-        if current_app.debug:
-            return success_response({
-                "message": "Email not configured; use the reset link below.",
-                "reset_link": link,
-            })
+        _log(f"could not start dispatch thread: {exc}")
 
     return success_response({"message": "If the email exists, a reset link has been sent"})
 
