@@ -212,40 +212,58 @@ def change_password():
 
 @auth_bp.post("/forgot-password")
 def forgot_password():
+    import sys
+
+    def _log(msg):
+        # print goes to stdout which gunicorn/Railway always captures, even when
+        # the Flask logger level filters things out. Keeps diagnostics visible.
+        print(f"[forgot-password] {msg}", file=sys.stdout, flush=True)
+        try:
+            current_app.logger.info("[forgot-password] %s", msg)
+        except Exception:
+            pass
+
+    _log("request received")
+
     try:
         payload = ForgotPasswordSchema().load(request.get_json() or {})
     except Exception as exc:
-        current_app.logger.warning("Forgot-password validation failed: %s", exc)
+        _log(f"validation failed: {exc}")
         return success_response({"message": "If the email exists, a reset link has been sent"})
 
-    # Send the email asynchronously so SMTP latency / failures never bubble up
-    # to the response. Always return the same generic success message so the
-    # endpoint can't be used to enumerate accounts.
     base_url = request.headers.get("Origin") or current_app.config["CLIENT_URL"]
     email_lower = payload["email"].lower()
+    _log(f"looking up user for {email_lower}")
 
-    def _dispatch_reset(app, target_email, base):
-        try:
-            with app.app_context():
-                user = User.query.filter_by(email=target_email).first()
-                if not user:
-                    return
-                s = URLSafeTimedSerializer(app.config["SECRET_KEY"])
-                token = s.dumps(user.email, salt="password-reset")
-                link = f"{base}/reset-password?token={token}"
-                email_service.send_password_reset_email(user.email, link)
-        except Exception as exc:
-            app.logger.exception("Failed to send password reset email to %s: %s", target_email, exc)
+    user = User.query.filter_by(email=email_lower).first()
+    if not user:
+        _log(f"no user found for {email_lower} (returning generic success)")
+        return success_response({"message": "If the email exists, a reset link has been sent"})
 
     try:
-        import threading
-        threading.Thread(
-            target=_dispatch_reset,
-            args=(current_app._get_current_object(), email_lower, base_url),
-            daemon=True,
-        ).start()
+        s = URLSafeTimedSerializer(current_app.config["SECRET_KEY"])
+        token = s.dumps(user.email, salt="password-reset")
+        link = f"{base_url}/reset-password?token={token}"
+        _log(f"reset link generated for {user.email}: {link}")
     except Exception as exc:
-        current_app.logger.warning("Could not dispatch password reset thread: %s", exc)
+        _log(f"token generation failed: {exc}")
+        current_app.logger.exception("Token generation failed for %s", user.email)
+        return success_response({"message": "If the email exists, a reset link has been sent"})
+
+    # Send synchronously so SMTP errors surface in the logs — this is a low
+    # frequency endpoint, so a small wait is acceptable.
+    try:
+        email_service.send_password_reset_email(user.email, link)
+        _log(f"reset email dispatched to {user.email}")
+    except Exception as exc:
+        _log(f"SMTP send failed: {exc}")
+        current_app.logger.exception("Failed to send password reset email to %s", user.email)
+        # Dev fallback: return the link so testing isn't blocked by SMTP issues.
+        if current_app.debug:
+            return success_response({
+                "message": "Email not configured; use the reset link below.",
+                "reset_link": link,
+            })
 
     return success_response({"message": "If the email exists, a reset link has been sent"})
 
