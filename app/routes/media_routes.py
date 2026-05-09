@@ -6,7 +6,7 @@ from flask import Blueprint, request
 from flask_jwt_extended import jwt_required
 
 from app.extensions import db
-from app.middleware.auth import get_current_user
+from app.middleware.auth import active_required, get_current_user
 from app.models import MediaAsset, User
 from app.schemas.media_asset_schema import MediaAssetOutputSchema
 from app.utils.responses import error_response, success_response
@@ -34,6 +34,7 @@ def _get_owned_asset(asset_id):
 
 @media_bp.post("/upload")
 @jwt_required()
+@active_required
 def upload_media():
     user = get_current_user()
     if not user:
@@ -113,6 +114,7 @@ def get_media(asset_id):
 
 @media_bp.delete("/<asset_id>")
 @jwt_required()
+@active_required
 def delete_media(asset_id):
     asset, err = _get_owned_asset(asset_id)
     if err:

@@ -3,7 +3,7 @@ from flask import Blueprint, request
 from flask_jwt_extended import jwt_required
 
 from app.extensions import db
-from app.middleware.auth import get_current_user
+from app.middleware.auth import active_required, get_current_user
 from app.models import Domain, Site
 from app.models.domain import DomainType
 from app.schemas.domain_schema import (
@@ -31,6 +31,7 @@ def check_subdomain():
 
 @domains_bp.post("/claim-subdomain")
 @jwt_required()
+@active_required
 def claim_subdomain():
     payload = ClaimSubdomainSchema().load(request.get_json() or {})
     site = Site.query.get(payload["site_id"])
@@ -51,6 +52,7 @@ def claim_subdomain():
 
 @domains_bp.post("/add-custom-domain")
 @jwt_required()
+@active_required
 def add_custom_domain():
     payload = CustomDomainSchema().load(request.get_json() or {})
     site = Site.query.get(payload["site_id"])
@@ -68,6 +70,7 @@ def add_custom_domain():
 
 @domains_bp.post("/verify-custom-domain")
 @jwt_required()
+@active_required
 def verify_custom_domain():
     payload = VerifyCustomDomainSchema().load(request.get_json() or {})
     domain = Domain.query.filter_by(domain=payload["domain"], type="custom").first()
@@ -105,6 +108,7 @@ def list_site_domains(site_id):
 
 @domains_bp.delete("/<uuid:domain_id>")
 @jwt_required()
+@active_required
 def delete_domain(domain_id):
     domain = Domain.query.get(domain_id)
     user = get_current_user()

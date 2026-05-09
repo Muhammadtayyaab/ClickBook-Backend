@@ -326,6 +326,7 @@ def update_user(user_id):
 def suspend_user(user_id):
     user = User.query.get_or_404(user_id)
     user.is_active = False
+    user.tokens_invalid_after = datetime.now(timezone.utc)
     db.session.commit()
     _log("user.suspend", "user", user.id)
     return success_response(UserOutputSchema().dump(user))

@@ -29,6 +29,7 @@ class User(db.Model):
     plan = db.Column(ENUM(UserPlan, name="user_plan", create_type=True), default=UserPlan.free, nullable=False)
     plan_expires_at = db.Column(db.DateTime(timezone=True), nullable=True)
     is_active = db.Column(db.Boolean, default=True, nullable=False)
+    tokens_invalid_after = db.Column(db.DateTime(timezone=True), nullable=True)
     avatar_url = db.Column(db.String(500))
     last_login_at = db.Column(db.DateTime(timezone=True))
     email_notifications_enabled = db.Column(db.Boolean, default=True, nullable=False, server_default=db.true())

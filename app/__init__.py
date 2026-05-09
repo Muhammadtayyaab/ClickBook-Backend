@@ -1,11 +1,12 @@
 import os
+from datetime import datetime, timezone
 from marshmallow import ValidationError
 from dotenv import load_dotenv
 from flask import Flask
 
 from config import config_by_name
 from app.extensions import cors, db, jwt, mail, ma, migrate
-from app.models import TokenBlocklist
+from app.models import TokenBlocklist, User
 from app.routes.admin_routes import admin_bp
 from app.routes.analytics_routes import analytics_bp
 from app.routes.auth_routes import auth_bp
@@ -78,7 +79,23 @@ def create_app(config_name=None):
 
     @jwt.token_in_blocklist_loader
     def token_check(_, jwt_payload):
-        return TokenBlocklist.query.filter_by(jti=jwt_payload["jti"]).first() is not None
+        if TokenBlocklist.query.filter_by(jti=jwt_payload["jti"]).first():
+            return True
+        sub = jwt_payload.get("sub")
+        if not sub:
+            return False
+        user = User.query.get(sub)
+        if user is None:
+            return True
+        cutoff = user.tokens_invalid_after
+        if cutoff is None:
+            return False
+        iat = jwt_payload.get("iat")
+        if iat is None:
+            return True
+        if cutoff.tzinfo is None:
+            cutoff = cutoff.replace(tzinfo=timezone.utc)
+        return datetime.fromtimestamp(iat, tz=timezone.utc) < cutoff
 
     return app
 

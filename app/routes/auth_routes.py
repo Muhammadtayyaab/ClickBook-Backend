@@ -6,7 +6,7 @@ from flask_jwt_extended import create_access_token, get_jwt, jwt_required
 from werkzeug.security import check_password_hash, generate_password_hash
 
 from app.extensions import db
-from app.middleware.auth import get_current_user
+from app.middleware.auth import active_required, get_current_user
 from app.models import Site, TokenBlocklist, User
 from app.models.site import SiteStatus
 from app.models.user import UserPlan
@@ -88,6 +88,8 @@ def login():
     user = User.query.filter_by(email=payload["email"].lower()).first()
     if not user or not check_password_hash(user.password_hash, payload["password"]):
         return error_response("Invalid email or password", 401)
+    if not user.is_active:
+        return error_response("Account suspended. Contact support.", 403)
     from datetime import datetime, timezone
     user.last_login_at = datetime.now(timezone.utc)
     db.session.commit()
@@ -146,6 +148,7 @@ def my_subscription():
 
 @auth_bp.patch("/me")
 @jwt_required()
+@active_required
 def update_me():
     payload = UpdateProfileSchema().load(request.get_json() or {})
     user = get_current_user()
@@ -169,6 +172,7 @@ def update_me():
 
 @auth_bp.post("/me/unsubscribe")
 @jwt_required()
+@active_required
 def unsubscribe():
     """Cancel the active subscription. The user reverts to the free plan
     immediately and forfeits any remaining paid time — no refund. Sites
@@ -195,6 +199,7 @@ def logout():
 
 @auth_bp.post("/change-password")
 @jwt_required()
+@active_required
 def change_password():
     payload = ChangePasswordSchema().load(request.get_json() or {})
     user = get_current_user()

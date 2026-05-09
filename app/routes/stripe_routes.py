@@ -3,7 +3,7 @@ from flask_jwt_extended import jwt_required
 import stripe
 
 from app.extensions import db
-from app.middleware.auth import get_current_user
+from app.middleware.auth import active_required, get_current_user
 from app.models import Domain, Payment, Site, Template, User
 from app.models.payment import PaymentStatus
 from app.models.site import SiteStatus
@@ -125,6 +125,7 @@ def _finalize_payment(payment: Payment, payment_intent_id: str | None) -> Paymen
 
 @stripe_bp.post("/create-session")
 @jwt_required()
+@active_required
 def create_session():
     body = request.get_json() or {}
     user = get_current_user()

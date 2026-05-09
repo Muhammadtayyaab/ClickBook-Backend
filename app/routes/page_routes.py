@@ -2,7 +2,7 @@ from flask import Blueprint, request
 from flask_jwt_extended import jwt_required
 
 from app.extensions import db
-from app.middleware.auth import get_current_user
+from app.middleware.auth import _ensure_active, get_current_user
 from app.models import Page, Site
 from app.schemas.page_schema import PageCreateSchema, PageOutputSchema, PageSectionsSchema, PageUpdateSchema, ReorderPagesSchema
 from app.utils.responses import error_response, success_response
@@ -10,13 +10,15 @@ from app.utils.responses import error_response, success_response
 pages_bp = Blueprint("pages", __name__)
 
 
-def _authorize_site(site_id):
+def _authorize_site(site_id, *, write=False):
     site = Site.query.get(site_id)
     if not site:
         return None, error_response("Site not found", 404)
     user = get_current_user()
     if user.role.value != "admin" and str(site.user_id) != str(user.id):
         return None, error_response("Forbidden", 403)
+    if write and (resp := _ensure_active(user)) is not None:
+        return None, resp
     return site, None
 
 
@@ -33,7 +35,7 @@ def list_pages(site_id):
 @pages_bp.post("/api/sites/<uuid:site_id>/pages")
 @jwt_required()
 def create_page(site_id):
-    _, err = _authorize_site(site_id)
+    _, err = _authorize_site(site_id, write=True)
     if err:
         return err
     payload = PageCreateSchema().load(request.get_json() or {})
@@ -47,7 +49,7 @@ def create_page(site_id):
 @pages_bp.put("/api/sites/<uuid:site_id>/pages/<uuid:page_id>")
 @jwt_required()
 def update_page(site_id, page_id):
-    _, err = _authorize_site(site_id)
+    _, err = _authorize_site(site_id, write=True)
     if err:
         return err
     payload = PageUpdateSchema().load(request.get_json() or {})
@@ -63,7 +65,7 @@ def update_page(site_id, page_id):
 @pages_bp.put("/api/sites/<uuid:site_id>/pages/<uuid:page_id>/sections")
 @jwt_required()
 def update_sections(site_id, page_id):
-    _, err = _authorize_site(site_id)
+    _, err = _authorize_site(site_id, write=True)
     if err:
         return err
     payload = PageSectionsSchema().load(request.get_json() or {})
@@ -78,7 +80,7 @@ def update_sections(site_id, page_id):
 @pages_bp.delete("/api/sites/<uuid:site_id>/pages/<uuid:page_id>")
 @jwt_required()
 def delete_page(site_id, page_id):
-    _, err = _authorize_site(site_id)
+    _, err = _authorize_site(site_id, write=True)
     if err:
         return err
     page = Page.query.filter_by(id=page_id, site_id=site_id).first()
@@ -95,7 +97,7 @@ def delete_page(site_id, page_id):
 @pages_bp.put("/api/sites/<uuid:site_id>/pages/reorder")
 @jwt_required()
 def reorder_pages(site_id):
-    _, err = _authorize_site(site_id)
+    _, err = _authorize_site(site_id, write=True)
     if err:
         return err
     payload = ReorderPagesSchema().load(request.get_json() or {})

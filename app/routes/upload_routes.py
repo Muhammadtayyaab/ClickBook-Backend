@@ -7,7 +7,7 @@ from flask import Blueprint, request
 from flask_jwt_extended import jwt_required
 
 from app.extensions import db
-from app.middleware.auth import get_current_user
+from app.middleware.auth import active_required, get_current_user
 from app.models import MediaAsset
 from app.utils.responses import error_response, success_response
 from app.utils.uploads import UploadError, save_uploaded_image
@@ -18,6 +18,7 @@ upload_bp = Blueprint("uploads", __name__, url_prefix="/api")
 
 @upload_bp.post("/upload")
 @jwt_required()
+@active_required
 def upload_file():
     user = get_current_user()
     if not user:

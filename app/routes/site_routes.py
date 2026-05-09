@@ -7,7 +7,7 @@ from flask_jwt_extended import jwt_required
 from sqlalchemy.exc import IntegrityError
 
 from app.extensions import db
-from app.middleware.auth import get_current_user
+from app.middleware.auth import _ensure_active, get_current_user
 from app.models import Page, Payment, Site, Template
 from app.models.payment import PaymentStatus
 from app.models.site import SiteStatus
@@ -199,11 +199,25 @@ def _ensure_owner(site: Site):
     return user, None
 
 
+def _ensure_owner_writable(site: Site):
+    """Owner check + suspension gate. Used on write/publish paths so the
+    suspension contract ('no publishing or domain changes') is enforced even
+    if the suspended user somehow holds a still-valid token."""
+    user, err = _ensure_owner(site)
+    if err:
+        return user, err
+    if (resp := _ensure_active(user)) is not None:
+        return user, resp
+    return user, None
+
+
 @sites_bp.post("/")
 @jwt_required()
 def create_site():
     payload = SiteCreateSchema().load(request.get_json() or {})
     user = get_current_user()
+    if (resp := _ensure_active(user)) is not None:
+        return resp
     template = Template.query.get(payload["template_id"])
     if not template or not template.is_active:
         return error_response("Template not found", 404)
@@ -299,7 +313,7 @@ def get_site(site_id):
 @jwt_required()
 def rename_site(site_id):
     site = Site.query.get(site_id)
-    _, err = _ensure_owner(site)
+    _, err = _ensure_owner_writable(site)
     if err:
         return err
     payload = SiteRenameSchema().load(request.get_json() or {})
@@ -312,7 +326,7 @@ def rename_site(site_id):
 @jwt_required()
 def update_styles(site_id):
     site = Site.query.get(site_id)
-    _, err = _ensure_owner(site)
+    _, err = _ensure_owner_writable(site)
     if err:
         return err
     payload = SiteStylesSchema().load(request.get_json() or {})
@@ -325,7 +339,7 @@ def update_styles(site_id):
 @jwt_required()
 def update_meta(site_id):
     site = Site.query.get(site_id)
-    _, err = _ensure_owner(site)
+    _, err = _ensure_owner_writable(site)
     if err:
         return err
     payload = SiteMetaSchema().load(request.get_json() or {})
@@ -345,7 +359,7 @@ def save_page_sections(site_id, page_slug):
     here so saves don't 404.
     """
     site = Site.query.get(site_id)
-    _, err = _ensure_owner(site)
+    _, err = _ensure_owner_writable(site)
     if err:
         return err
     if page_slug not in DEFAULT_PAGES:
@@ -462,7 +476,7 @@ def get_publish_slots(user) -> int | None:
 @jwt_required()
 def publish_site(site_id):
     site = Site.query.get(site_id)
-    user, err = _ensure_owner(site)
+    user, err = _ensure_owner_writable(site)
     if err:
         return err
 
@@ -506,7 +520,7 @@ def publish_site(site_id):
 @jwt_required()
 def unpublish_site(site_id):
     site = Site.query.get(site_id)
-    _, err = _ensure_owner(site)
+    _, err = _ensure_owner_writable(site)
     if err:
         return err
     site.status = SiteStatus.unpublished
@@ -518,7 +532,7 @@ def unpublish_site(site_id):
 @jwt_required()
 def duplicate_site(site_id):
     site = Site.query.get(site_id)
-    user, err = _ensure_owner(site)
+    user, err = _ensure_owner_writable(site)
     if err:
         return err
 
@@ -553,7 +567,7 @@ def duplicate_site(site_id):
 @jwt_required()
 def delete_site(site_id):
     site = Site.query.get(site_id)
-    _, err = _ensure_owner(site)
+    _, err = _ensure_owner_writable(site)
     if err:
         return err
     db.session.delete(site)
