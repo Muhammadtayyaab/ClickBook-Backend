@@ -213,78 +213,108 @@ def change_password():
 @auth_bp.post("/forgot-password")
 def forgot_password():
     import sys
+    import socket
+    import traceback as _tb
 
     def _log(msg):
-        # print goes to stdout which gunicorn/Railway always captures, even when
-        # the Flask logger level filters things out. Keeps diagnostics visible.
         print(f"[forgot-password] {msg}", file=sys.stdout, flush=True)
         try:
             current_app.logger.info("[forgot-password] %s", msg)
         except Exception:
             pass
 
-    _log("request received")
+    body = request.get_json(silent=True) or {}
+    debug_diag = request.args.get("debug") == "1" or body.get("debug") is True
+    diagnostics = {"steps": []}
+
+    def _step(name, ok=True, **info):
+        diagnostics["steps"].append({"step": name, "ok": ok, **info})
+        _log(f"{name} ok={ok} {info}")
 
     try:
-        payload = ForgotPasswordSchema().load(request.get_json() or {})
-    except Exception as exc:
-        _log(f"validation failed: {exc}")
+        _log("request received")
+        _step("received", body_keys=list(body.keys()))
+
+        try:
+            payload = ForgotPasswordSchema().load(body)
+        except Exception as exc:
+            _step("validate", ok=False, error=repr(exc))
+            return success_response({"message": "If the email exists, a reset link has been sent"})
+        _step("validate")
+
+        base_url = request.headers.get("Origin") or current_app.config.get("CLIENT_URL")
+        email_lower = payload["email"].lower()
+        _step("lookup_start", email=email_lower)
+
+        try:
+            user = User.query.filter_by(email=email_lower).first()
+        except Exception as exc:
+            _step("db_lookup", ok=False, error=repr(exc))
+            if debug_diag:
+                return success_response({"message": "DB lookup failed", "error": repr(exc), "diagnostics": diagnostics})
+            return success_response({"message": "If the email exists, a reset link has been sent"})
+        _step("db_lookup", found=bool(user))
+
+        if not user:
+            return success_response({"message": "If the email exists, a reset link has been sent", **({"diagnostics": diagnostics} if debug_diag else {})})
+
+        try:
+            s = URLSafeTimedSerializer(current_app.config["SECRET_KEY"])
+            token = s.dumps(user.email, salt="password-reset")
+            link = f"{base_url}/reset-password?token={token}"
+        except Exception as exc:
+            _step("token", ok=False, error=repr(exc))
+            if debug_diag:
+                return success_response({"message": "Token generation failed", "error": repr(exc), "diagnostics": diagnostics})
+            return success_response({"message": "If the email exists, a reset link has been sent"})
+        _step("token")
+
+        smtp_error = None
+        old_timeout = socket.getdefaulttimeout()
+        try:
+            socket.setdefaulttimeout(10)
+            email_service.send_password_reset_email(user.email, link)
+            _step("smtp_send")
+        except Exception as exc:
+            smtp_error = exc
+            _step("smtp_send", ok=False, error=repr(exc))
+            _log(_tb.format_exc())
+        finally:
+            socket.setdefaulttimeout(old_timeout)
+
+        if debug_diag:
+            return success_response({
+                "message": "diagnostic",
+                "smtp_error": repr(smtp_error) if smtp_error else None,
+                "mail_server": current_app.config.get("MAIL_SERVER"),
+                "mail_port": current_app.config.get("MAIL_PORT"),
+                "mail_use_tls": current_app.config.get("MAIL_USE_TLS"),
+                "mail_username_set": bool(current_app.config.get("MAIL_USERNAME")),
+                "mail_password_set": bool(current_app.config.get("MAIL_PASSWORD")),
+                "diagnostics": diagnostics,
+                "reset_link": link,
+            })
+
         return success_response({"message": "If the email exists, a reset link has been sent"})
 
-    base_url = request.headers.get("Origin") or current_app.config["CLIENT_URL"]
-    email_lower = payload["email"].lower()
-    _log(f"looking up user for {email_lower}")
-
-    user = User.query.filter_by(email=email_lower).first()
-    if not user:
-        _log(f"no user found for {email_lower} (returning generic success)")
-        return success_response({"message": "If the email exists, a reset link has been sent"})
-
-    try:
-        s = URLSafeTimedSerializer(current_app.config["SECRET_KEY"])
-        token = s.dumps(user.email, salt="password-reset")
-        link = f"{base_url}/reset-password?token={token}"
-        _log(f"reset link generated for {user.email}: {link}")
     except Exception as exc:
-        _log(f"token generation failed: {exc}")
-        current_app.logger.exception("Token generation failed for %s", user.email)
-        return success_response({"message": "If the email exists, a reset link has been sent"})
-
-    # Send synchronously with a tight socket timeout so SMTP errors surface in
-    # the HTTP response — Railway log visibility has been unreliable for this
-    # service. Pass `?debug=1` to receive the actual error in the response body
-    # to aid diagnosis. The 15s timeout keeps us well inside gunicorn's
-    # default 30s worker timeout.
-    import socket
-    import traceback as _tb
-
-    debug_diag = request.args.get("debug") == "1" or (request.get_json(silent=True) or {}).get("debug") is True
-
-    smtp_error = None
-    old_timeout = socket.getdefaulttimeout()
-    try:
-        socket.setdefaulttimeout(15)
-        email_service.send_password_reset_email(user.email, link)
-        _log(f"reset email dispatched to {user.email}")
-    except Exception as exc:
-        smtp_error = exc
-        _log(f"SMTP send failed for {user.email}: {exc!r}")
+        # Top-level guard: never let this endpoint return 500. Without this,
+        # any unexpected error (DB connection, config missing, etc.) becomes
+        # an opaque 500 with no body — which is what we hit before.
+        _log(f"unhandled exception: {exc!r}")
         _log(_tb.format_exc())
-    finally:
-        socket.setdefaulttimeout(old_timeout)
-
-    if smtp_error is not None and debug_diag:
-        # Diagnostic mode only — never enabled by the normal frontend path.
-        return success_response({
-            "message": "SMTP send failed",
-            "error": f"{type(smtp_error).__name__}: {smtp_error}",
-            "mail_server": current_app.config.get("MAIL_SERVER"),
-            "mail_port": current_app.config.get("MAIL_PORT"),
-            "mail_username_set": bool(current_app.config.get("MAIL_USERNAME")),
-            "mail_password_set": bool(current_app.config.get("MAIL_PASSWORD")),
-        })
-
-    return success_response({"message": "If the email exists, a reset link has been sent"})
+        try:
+            current_app.logger.exception("forgot-password unhandled")
+        except Exception:
+            pass
+        if debug_diag:
+            return success_response({
+                "message": "unhandled",
+                "error": repr(exc),
+                "trace": _tb.format_exc(),
+                "diagnostics": diagnostics,
+            })
+        return success_response({"message": "If the email exists, a reset link has been sent"})
 
 
 @auth_bp.post("/reset-password")
