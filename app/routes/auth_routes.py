@@ -31,14 +31,19 @@ def register():
     payload = UserCreateSchema().load(request.get_json() or {})
     if User.query.filter_by(email=payload["email"].lower()).first():
         return error_response("Email is already in use", 409)
-    user = User(name=payload["name"], email=payload["email"].lower(), password_hash=generate_password_hash(payload["password"]))
-    db.session.add(user)
-    db.session.commit()
+    try:
+        user = User(name=payload["name"], email=payload["email"].lower(), password_hash=generate_password_hash(payload["password"]))
+        db.session.add(user)
+        db.session.commit()
+    except Exception as exc:
+        db.session.rollback()
+        current_app.logger.exception("Register failed for %s: %s", payload.get("email"), exc)
+        return error_response(f"Registration failed: {exc.__class__.__name__}: {exc}", 500)
     token = create_access_token(identity=str(user.id))
     try:
         email_service.send_welcome_email(user)
     except Exception:
-        pass  # MVP: don't block registration if email fails
+        current_app.logger.exception("Welcome email failed for %s", user.email)
     return success_response({"token": token, "user": UserOutputSchema().dump(user)})
 
 

@@ -36,6 +36,16 @@ def create_app(config_name=None):
 
     db.init_app(app)
     migrate.init_app(app, db)
+
+    if os.getenv("AUTO_MIGRATE", "1") == "1":
+        with app.app_context():
+            try:
+                from flask_migrate import upgrade as _alembic_upgrade
+                _alembic_upgrade()
+                app.logger.info("Alembic migrations applied at startup")
+            except Exception:
+                app.logger.exception("Auto-migrate at startup failed")
+
     jwt.init_app(app)
     ma.init_app(app)
     mail.init_app(app)
