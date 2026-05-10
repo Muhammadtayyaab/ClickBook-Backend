@@ -1,26 +1,52 @@
+"""Email delivery via Mailtrap HTTP API.
+
+Railway (and most modern PaaS) blocks outbound SMTP, so we send through
+Mailtrap's HTTP endpoint instead. Configure with:
+  MAILTRAP_API_TOKEN — Bearer token from Mailtrap → Settings → API Tokens
+  MAILTRAP_INBOX_ID  — sandbox inbox ID (numeric, in the Integrations URL)
+  MAILTRAP_API_URL   — optional override (default: sandbox endpoint)
+  MAIL_DEFAULT_SENDER — From address (e.g. no-reply@clickbook.com)
+"""
+
+import os
 from html import escape
 
+import requests
 from flask import current_app, render_template_string
-from flask_mail import Message
-from app.extensions import mail
 
 
 def _send(to, subject, html, reply_to=None):
-    # In dev this project ships with placeholder Mailtrap creds in `.env`.
-    # If they aren't replaced, sending will always fail; raise a clear error
-    # so callers can surface a fallback (e.g., logging a reset link).
-    username = current_app.config.get("MAIL_USERNAME")
-    password = current_app.config.get("MAIL_PASSWORD")
-    if username in (None, "", "change-me") or password in (None, "", "change-me"):
-        raise RuntimeError("Email is not configured (set MAIL_USERNAME / MAIL_PASSWORD in .env)")
-    msg = Message(
-        subject=subject,
-        recipients=[to],
-        html=html,
-        sender=current_app.config["MAIL_DEFAULT_SENDER"],
-        reply_to=reply_to,
+    token = os.getenv("MAILTRAP_API_TOKEN")
+    inbox_id = os.getenv("MAILTRAP_INBOX_ID")
+    if not token or not inbox_id:
+        raise RuntimeError(
+            "Mailtrap not configured (set MAILTRAP_API_TOKEN and MAILTRAP_INBOX_ID)"
+        )
+
+    base = os.getenv("MAILTRAP_API_URL", "https://sandbox.api.mailtrap.io")
+    url = f"{base.rstrip('/')}/api/send/{inbox_id}"
+
+    sender = current_app.config.get("MAIL_DEFAULT_SENDER") or "no-reply@clickbook.com"
+    payload = {
+        "from": {"email": sender, "name": "ClickBook"},
+        "to": [{"email": to}],
+        "subject": subject,
+        "html": html,
+    }
+    if reply_to:
+        payload["reply_to"] = {"email": reply_to}
+
+    resp = requests.post(
+        url,
+        json=payload,
+        headers={
+            "Authorization": f"Bearer {token}",
+            "Content-Type": "application/json",
+        },
+        timeout=15,
     )
-    mail.send(msg)
+    if resp.status_code >= 300:
+        raise RuntimeError(f"Mailtrap send failed {resp.status_code}: {resp.text}")
 
 
 def send_email(to, subject, body, reply_to=None):

@@ -47,8 +47,8 @@ class ProductionConfig(Config):
         required = [
             "SECRET_KEY", "DATABASE_URL", "JWT_SECRET_KEY",
             "STRIPE_SECRET_KEY", "STRIPE_WEBHOOK_SECRET",
-            "MAIL_SERVER", "MAIL_PORT", "MAIL_USERNAME",
-            "MAIL_PASSWORD", "MAIL_DEFAULT_SENDER",
+            "MAIL_DEFAULT_SENDER",
+            "MAILTRAP_API_TOKEN", "MAILTRAP_INBOX_ID",
         ]
         missing = [k for k in required if not os.environ.get(k)]
         if missing:
@@ -58,10 +58,6 @@ class ProductionConfig(Config):
         app.config["JWT_SECRET_KEY"] = os.environ["JWT_SECRET_KEY"]
         app.config["STRIPE_SECRET_KEY"] = os.environ["STRIPE_SECRET_KEY"]
         app.config["STRIPE_WEBHOOK_SECRET"] = os.environ["STRIPE_WEBHOOK_SECRET"]
-        app.config["MAIL_SERVER"] = os.environ["MAIL_SERVER"]
-        app.config["MAIL_PORT"] = int(os.environ["MAIL_PORT"])
-        app.config["MAIL_USERNAME"] = os.environ["MAIL_USERNAME"]
-        app.config["MAIL_PASSWORD"] = os.environ["MAIL_PASSWORD"]
         app.config["MAIL_DEFAULT_SENDER"] = os.environ["MAIL_DEFAULT_SENDER"]
 
 
