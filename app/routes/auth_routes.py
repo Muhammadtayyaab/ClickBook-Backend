@@ -46,10 +46,20 @@ def register():
         current_app.logger.exception("Register token failed for %s", user.email)
         return error_response(f"Registration failed (token): {exc.__class__.__name__}: {exc}", 500)
 
-    try:
-        email_service.send_welcome_email(user)
-    except Exception:
-        current_app.logger.exception("Welcome email failed for %s", user.email)
+    # Fire-and-forget: SMTP from Railway can hang past worker timeout,
+    # which would crash the worker and return Railway's edge 500 HTML.
+    import threading
+    app_obj = current_app._get_current_object()
+    user_email = user.email
+    user_name = user.name
+    def _send_welcome_async():
+        with app_obj.app_context():
+            try:
+                from types import SimpleNamespace
+                email_service.send_welcome_email(SimpleNamespace(email=user_email, name=user_name))
+            except Exception:
+                app_obj.logger.exception("Welcome email failed for %s", user_email)
+    threading.Thread(target=_send_welcome_async, daemon=True).start()
 
     try:
         user_dump = UserOutputSchema().dump(user)
