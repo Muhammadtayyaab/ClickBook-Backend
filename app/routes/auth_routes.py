@@ -214,6 +214,7 @@ def forgot_password():
             with app_obj.app_context():
                 try:
                     email_service.send_password_reset_email(recipient, link)
+                    app_obj.logger.info("Password reset email sent to %s", recipient)
                 except Exception:
                     app_obj.logger.exception("Password reset email failed for %s", recipient)
         threading.Thread(target=_send_async, daemon=True).start()
