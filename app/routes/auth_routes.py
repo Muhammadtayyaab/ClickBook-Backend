@@ -197,7 +197,6 @@ def change_password():
 def forgot_password():
     payload = ForgotPasswordSchema().load(request.get_json() or {})
     user = User.query.filter_by(email=payload["email"].lower()).first()
-    dev_link = None
     if user:
         s = URLSafeTimedSerializer(current_app.config["SECRET_KEY"])
         token = s.dumps(user.email, salt="password-reset")
@@ -219,13 +218,7 @@ def forgot_password():
                     app_obj.logger.exception("Password reset email failed for %s", recipient)
         threading.Thread(target=_send_async, daemon=True).start()
 
-        if current_app.debug:
-            dev_link = link
-
-    body = {"message": "If the email exists, a reset link has been sent"}
-    if dev_link:
-        body["reset_link"] = dev_link
-    return success_response(body)
+    return success_response({"message": "If the email exists, a reset link has been sent"})
 
 
 @auth_bp.post("/reset-password")
