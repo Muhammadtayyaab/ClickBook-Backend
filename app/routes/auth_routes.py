@@ -197,26 +197,35 @@ def change_password():
 def forgot_password():
     payload = ForgotPasswordSchema().load(request.get_json() or {})
     user = User.query.filter_by(email=payload["email"].lower()).first()
+    dev_link = None
     if user:
         s = URLSafeTimedSerializer(current_app.config["SECRET_KEY"])
         token = s.dumps(user.email, salt="password-reset")
         # Prefer the calling frontend's origin so dev ports (8081, etc.) work.
         base_url = request.headers.get("Origin") or current_app.config["CLIENT_URL"]
         link = f"{base_url}/reset-password?token={token}"
-        try:
-            email_service.send_password_reset_email(user.email, link)
-        except Exception as exc:
-            current_app.logger.exception("Failed to send password reset email to %s: %s", user.email, exc)
-            # Dev-only fallback: return the link so the user can continue testing
-            # even if SMTP isn't configured.
-            if current_app.debug:
-                return success_response(
-                    {
-                        "message": "Email not configured; use the reset link below.",
-                        "reset_link": link,
-                    }
-                )
-    return success_response({"message": "If the email exists, a reset link has been sent"})
+
+        # SMTP from Railway can hang past the worker timeout, which makes the
+        # edge return an HTML error page instead of our JSON — surfacing as
+        # "Could not send reset link" on the client. Send asynchronously.
+        import threading
+        app_obj = current_app._get_current_object()
+        recipient = user.email
+        def _send_async():
+            with app_obj.app_context():
+                try:
+                    email_service.send_password_reset_email(recipient, link)
+                except Exception:
+                    app_obj.logger.exception("Password reset email failed for %s", recipient)
+        threading.Thread(target=_send_async, daemon=True).start()
+
+        if current_app.debug:
+            dev_link = link
+
+    body = {"message": "If the email exists, a reset link has been sent"}
+    if dev_link:
+        body["reset_link"] = dev_link
+    return success_response(body)
 
 
 @auth_bp.post("/reset-password")
