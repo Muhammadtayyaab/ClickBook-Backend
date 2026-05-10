@@ -37,14 +37,27 @@ def register():
         db.session.commit()
     except Exception as exc:
         db.session.rollback()
-        current_app.logger.exception("Register failed for %s: %s", payload.get("email"), exc)
-        return error_response(f"Registration failed: {exc.__class__.__name__}: {exc}", 500)
-    token = create_access_token(identity=str(user.id))
+        current_app.logger.exception("Register insert failed for %s", payload.get("email"))
+        return error_response(f"Registration failed (insert): {exc.__class__.__name__}: {exc}", 500)
+
+    try:
+        token = create_access_token(identity=str(user.id))
+    except Exception as exc:
+        current_app.logger.exception("Register token failed for %s", user.email)
+        return error_response(f"Registration failed (token): {exc.__class__.__name__}: {exc}", 500)
+
     try:
         email_service.send_welcome_email(user)
     except Exception:
         current_app.logger.exception("Welcome email failed for %s", user.email)
-    return success_response({"token": token, "user": UserOutputSchema().dump(user)})
+
+    try:
+        user_dump = UserOutputSchema().dump(user)
+    except Exception as exc:
+        current_app.logger.exception("Register dump failed for %s", user.email)
+        return error_response(f"Registration failed (serialize): {exc.__class__.__name__}: {exc}", 500)
+
+    return success_response({"token": token, "user": user_dump})
 
 
 @auth_bp.post("/login")
