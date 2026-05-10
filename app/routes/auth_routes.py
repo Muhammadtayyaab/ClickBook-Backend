@@ -195,10 +195,11 @@ def change_password():
 
 @auth_bp.post("/forgot-password")
 def forgot_password():
+    import sys
     payload = ForgotPasswordSchema().load(request.get_json() or {})
-    current_app.logger.warning("FORGOT-PASSWORD requested for %s", payload.get("email"))
+    print(f"[FORGOT-PASSWORD] requested for {payload.get('email')}", flush=True, file=sys.stderr)
     user = User.query.filter_by(email=payload["email"].lower()).first()
-    current_app.logger.warning("FORGOT-PASSWORD user lookup result: %s", "FOUND" if user else "NOT FOUND")
+    print(f"[FORGOT-PASSWORD] user lookup: {'FOUND' if user else 'NOT FOUND'}", flush=True, file=sys.stderr)
     if user:
         s = URLSafeTimedSerializer(current_app.config["SECRET_KEY"])
         token = s.dumps(user.email, salt="password-reset")
@@ -214,12 +215,14 @@ def forgot_password():
         recipient = user.email
         def _send_async():
             with app_obj.app_context():
+                import sys, traceback
                 try:
                     email_service.send_password_reset_email(recipient, link)
-                    app_obj.logger.warning("FORGOT-PASSWORD email SENT to %s", recipient)
+                    print(f"[FORGOT-PASSWORD] email SENT to {recipient}", flush=True, file=sys.stderr)
                 except Exception as exc:
-                    app_obj.logger.warning("FORGOT-PASSWORD email FAILED for %s: %r", recipient, exc)
-                    app_obj.logger.exception("Traceback:")
+                    print(f"[FORGOT-PASSWORD] email FAILED for {recipient}: {exc!r}", flush=True, file=sys.stderr)
+                    traceback.print_exc(file=sys.stderr)
+                    sys.stderr.flush()
         threading.Thread(target=_send_async, daemon=True).start()
 
     return success_response({"message": "If the email exists, a reset link has been sent"})
