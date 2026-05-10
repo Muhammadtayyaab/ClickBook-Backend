@@ -195,11 +195,8 @@ def change_password():
 
 @auth_bp.post("/forgot-password")
 def forgot_password():
-    import sys
     payload = ForgotPasswordSchema().load(request.get_json() or {})
-    print(f"[FORGOT-PASSWORD] requested for {payload.get('email')}", flush=True, file=sys.stderr)
     user = User.query.filter_by(email=payload["email"].lower()).first()
-    print(f"[FORGOT-PASSWORD] user lookup: {'FOUND' if user else 'NOT FOUND'}", flush=True, file=sys.stderr)
     if user:
         s = URLSafeTimedSerializer(current_app.config["SECRET_KEY"])
         token = s.dumps(user.email, salt="password-reset")
@@ -215,14 +212,10 @@ def forgot_password():
         recipient = user.email
         def _send_async():
             with app_obj.app_context():
-                import sys, traceback
                 try:
                     email_service.send_password_reset_email(recipient, link)
-                    print(f"[FORGOT-PASSWORD] email SENT to {recipient}", flush=True, file=sys.stderr)
-                except Exception as exc:
-                    print(f"[FORGOT-PASSWORD] email FAILED for {recipient}: {exc!r}", flush=True, file=sys.stderr)
-                    traceback.print_exc(file=sys.stderr)
-                    sys.stderr.flush()
+                except Exception:
+                    app_obj.logger.exception("Password reset email failed for %s", recipient)
         threading.Thread(target=_send_async, daemon=True).start()
 
     return success_response({"message": "If the email exists, a reset link has been sent"})
