@@ -16,8 +16,10 @@ from flask import current_app, render_template_string
 
 
 def _send(to, subject, html, reply_to=None):
-    token = os.getenv("MAILTRAP_API_TOKEN")
-    inbox_id = os.getenv("MAILTRAP_INBOX_ID")
+    import sys
+    token = (os.getenv("MAILTRAP_API_TOKEN") or "").strip()
+    inbox_id = (os.getenv("MAILTRAP_INBOX_ID") or "").strip()
+    print(f"[MAILTRAP] token_len={len(token)} inbox_id={inbox_id!r}", flush=True, file=sys.stderr)
     if not token or not inbox_id:
         raise RuntimeError(
             "Mailtrap not configured (set MAILTRAP_API_TOKEN and MAILTRAP_INBOX_ID)"
@@ -25,6 +27,7 @@ def _send(to, subject, html, reply_to=None):
 
     base = os.getenv("MAILTRAP_API_URL", "https://sandbox.api.mailtrap.io")
     url = f"{base.rstrip('/')}/api/send/{inbox_id}"
+    print(f"[MAILTRAP] POST {url}", flush=True, file=sys.stderr)
 
     sender = current_app.config.get("MAIL_DEFAULT_SENDER") or "no-reply@clickbook.com"
     payload = {
